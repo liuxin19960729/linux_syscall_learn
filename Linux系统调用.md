@@ -27,11 +27,6 @@ SYSCALL (syscall, 1)
 PSEUDO_END(syscall)
 
 
-//
-SYSCALL (syscall, 1)
-	ret
-PSEUDO_END(syscall)
-
 相当于
 
 PSEUDO (syscall, syscall, args)
@@ -107,5 +102,146 @@ PSEUDO_END(syscall)
 # define ENTER_KERNEL int $0x80 //
 int $0x80 
 软中断使当前线程由内核接管
+
+```
+
+### linux (x86)
+```c
+init/main.cpp
+
+start_kernel()->trap_init();
+
+arch/x86/kernel/traps.c
+void __init trap_init(void)
+{
+	/* Init cpu_entry_area before IST entries are set up */
+	setup_cpu_entry_areas();
+
+	/* Init GHCB memory pages when running as an SEV-ES guest */
+	sev_es_init_vc_handling();
+
+	/* Initialize TSS before setting up traps so ISTs work */
+	cpu_init_exception_handling();
+	/* Setup traps as cpu_init() might #GP */
+	idt_setup_traps();
+	cpu_init();
+}
+
+// 注册中断
+void __init idt_setup_traps(void)
+{
+	idt_setup_from_table(idt_table, def_idts, ARRAY_SIZE(def_idts), true);
+}
+
+
+def_idts 里面包含   SYSG(IA32_SYSCALL_VECTOR,	entry_INT80_32), 
+
+
+
+
+// 80 中断代码 
+// int 80 会触发代码执行
+SYM_FUNC_START(entry_INT80_32)
+	ASM_CLAC
+    // eax 存储着系统调用的号码
+	pushl	%eax			/* pt_regs->orig_ax */
+
+    // 将当前用户态的数据 保存到 struct pt_regs  结构
+    // 进入内核 
+	SAVE_ALL pt_regs_ax=$-ENOSYS switch_stacks=1	/* save rest */ 
+
+	movl	%esp, %eax ;
+    //进入内核代码
+	call	do_int80_syscall_32 
+
+
+// 处理80 中断
+/* Handles int $0x80 */
+__visible noinstr void do_int80_syscall_32(struct pt_regs *regs)
+{
+
+
+	do_syscall_32_irqs_on(regs, nr);
+
+    // .....
+
+    //系统调用结束回到 用户模式
+    syscall_exit_to_user_mode(regs);
+}
+/*
+ * Invoke a 32-bit syscall.  Called with IRQs on in CONTEXT_KERNEL.
+ */
+static __always_inline void do_syscall_32_irqs_on(struct pt_regs *regs, int nr)
+{
+	/*
+	 * Convert negative numbers to very high and thus out of range
+	 * numbers for comparisons.
+	 */
+	unsigned int unr = nr;
+
+	if (likely(unr < IA32_NR_syscalls)) {
+		unr = array_index_nospec(unr, IA32_NR_syscalls);
+		regs->ax = ia32_sys_call_table[unr](regs);//根据传入函数号执行
+	} else if (nr != -1) {
+		regs->ax = __ia32_sys_ni_syscall(regs);
+	}
+// }
+
+// 系统调用结束返回到用户模式
+__visible noinstr void syscall_exit_to_user_mode(struct pt_regs *regs)
+{
+	instrumentation_begin();
+	__syscall_exit_to_user_mode_work(regs);
+	instrumentation_end();
+	__exit_to_user_mode();
+}
+
+```
+![x86_syscall_流程图](./imgs/x86_syscall_流程图.png)
+
+### 64 位的系统调用 
+```c
+glibc
+
+sysdep/unix/sysdep.h
+
+#define	SYSCALL(name, args)	PSEUDO (name, name, args)
+
+sysdep/unix/syscall.S
+
+#include <sysdep.h>
+
+#ifndef SYS_syscall
+#define SYS_syscall	0
+#endif
+
+
+SYSCALL (syscall, 1)
+	ret
+PSEUDO_END(syscall)
+
+//  sysdeps/x86_64/sysdep.h
+// PSEUDO
+#define	PSEUDO(name, syscall_name, args)				      \
+lose:									      \
+  jmp JUMPTARGET(syscall_error)						      \
+  .globl syscall_error;							      \
+  ENTRY (name)								      \
+  DO_CALL (syscall_name, args);						      \
+  jb lose
+
+
+// sysdeps/unix/x86_64/sysdep.h
+//DO_CALL
+#define DO_CALL(syscall_name, args)					      \
+  lea SYS_ify (syscall_name), %rax;					      \
+  syscall
+
+
+lea SYS_ify (syscall_name), %rax;		系统调用名称转换为系统调用号
+x86-64 不是中断调用
+
+syscall 指令用于系统调用
+
 
 ```
