@@ -1,5 +1,5 @@
 # 系统调用
-## glic
+
 ```c
 int open(const char *pathname, int flags, mode_t mode)
 源码:
@@ -241,7 +241,82 @@ lose:									      \
 lea SYS_ify (syscall_name), %rax;		系统调用名称转换为系统调用号
 x86-64 不是中断调用
 
-syscall 指令用于系统调用
-
+syscall 指令用于系统调用--会使用到特殊模块寄存器
 
 ```
+### linux (x86-64)
+```c
+start_kernel(){
+    trap_init();
+}
+
+trap_init(){
+    idt_setup_traps();//软中断表安装
+    cpu_init();
+}
+
+cpu_init(){
+
+    if (IS_ENABLED(CONFIG_X86_64)) {//x86 64
+        syscall_init();
+    }
+}
+
+// arch/x86/kernel/cpu/common.c
+void syscall_init(void){
+    wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+}
+
+// rdmsr  读
+// wrmsr  写
+MSR_LSTAR //长模式下的特殊寄存器
+
+
+syscall 从该寄存器拿出函数地址开始执行
+
+
+SYM_CODE_START(entry_SYSCALL_64)
+
+    //....
+	call	do_syscall_64		/* returns with IRQs disabled */
+
+
+SYM_INNER_LABEL(entry_SYSRETQ_unsafe_stack, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
+	swapgs
+	sysretq //返回用户态
+
+__visible noinstr void do_syscall_64(struct pt_regs *regs, int nr)
+{
+	add_random_kstack_offset();
+	nr = syscall_enter_from_user_mode(regs, nr);
+
+	instrumentation_begin();
+
+	if (!do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr) && nr != -1) {
+		/* Invalid system call, but still a system call. */
+		regs->ax = __x64_sys_ni_syscall(regs);
+	}
+
+	instrumentation_end();
+	syscall_exit_to_user_mode(regs);
+}
+```
+![x86_64_syscall_流程图](./imgs/x86_64_syscall_流程图.png)
+
+### 系统调用表
+```c
+arch/x86/entry/syscalls
+syscall_32.tbl
+5	i386	open			sys_open			compat_sys_open
+
+syscall_64.tbl
+2	common	open			sys_open
+
+
+1:调用号
+3:调用名字
+
+include/linux/syscall.h 一般叫做 sysopen
+```
+[linux86_64系统调用](./main.c)
